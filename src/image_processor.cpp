@@ -188,7 +188,7 @@ bool ImageProcessor::createRosIO() {
   stereo_sub.registerCallback(&ImageProcessor::stereoCallback, this);
   imu_sub = nh.subscribe("imu", 50,
       &ImageProcessor::imuCallback, this);
-
+  mask_sub = nh.subscribe("/image_mask", 10, &ImageProcessor::maskCallback, this);
   return true;
 }
 
@@ -199,7 +199,7 @@ bool ImageProcessor::initialize() {
   // Create feature detector.
   detector_ptr = FastFeatureDetector::create(
       processor_config.fast_threshold);
-
+  curr_mask_img_ptr = NULL;
   if (!createRosIO()) return false;
   ROS_INFO("Finish creating ROS IO...");
 
@@ -291,6 +291,25 @@ void ImageProcessor::imuCallback(
   // Wait for the first image to be set.
   if (is_first_img) return;
   imu_msg_buffer.push_back(*msg);
+  return;
+}
+
+void ImageProcessor::maskCallback(
+    const sensor_msgs::ImageConstPtr& msg) {
+  // Wait for the first image to be set.
+  if (is_first_img) return;
+  cv_bridge::CvImagePtr cv_ptr;
+  try
+  {
+    curr_mask_img_ptr = cv_bridge::toCvShare(msg,
+      sensor_msgs::image_encodings::MONO8);
+    //ROS_INFO("get mask image\n");
+  }
+  catch (cv_bridge::Exception& e)
+  {
+    ROS_ERROR("cv_bridge exception: %s", e.what());
+    return;
+  }
   return;
 }
 
@@ -691,7 +710,8 @@ void ImageProcessor::stereoMatch(
 }
 
 void ImageProcessor::addNewFeatures() {
-  const Mat& curr_img = cam0_curr_img_ptr->image;
+  const Mat& curr_img = cam0_curr_img_ptr->image; 
+  Mat mask_thresh;
 
   // Size of each grid.
   static int grid_height =
@@ -700,12 +720,28 @@ void ImageProcessor::addNewFeatures() {
     cam0_curr_img_ptr->image.cols / processor_config.grid_col;
 
   // Create a mask to avoid redetecting existing features.
-  Mat mask(curr_img.rows, curr_img.cols, CV_8U, Scalar(1));
+  Mat mask(curr_img.rows, curr_img.cols, CV_8U, Scalar(255));
 
-  for (const auto& features : *curr_features_ptr) {
-    for (const auto& feature : features.second) {
+  if (curr_mask_img_ptr != NULL) {
+    const Mat& curr_mask = curr_mask_img_ptr->image; 
+    cv::threshold(curr_mask, mask_thresh, 128, 255, 0);
+    Mat element = getStructuringElement( cv::MORPH_ELLIPSE,
+                      Size( 17, 17 ));
+    cv::dilate(mask_thresh, mask_thresh, element);
+    cv::bitwise_not(mask_thresh, mask_thresh);
+  }
+  // TODO: remove feature inside mask
+  for (int code = 0; code <
+      processor_config.grid_row*processor_config.grid_col; ++code) {
+    vector<FeatureMetaData> new_feature;
+    auto features = (*curr_features_ptr)[code];
+    for (const auto& feature : features) {
       const int y = static_cast<int>(feature.cam0_point.y);
       const int x = static_cast<int>(feature.cam0_point.x);
+
+      if (mask_thresh.at<uchar>(y, x) != 0) {
+        new_feature.push_back(feature);
+      }
 
       int up_lim = y-2, bottom_lim = y+3,
           left_lim = x-2, right_lim = x+3;
@@ -718,8 +754,15 @@ void ImageProcessor::addNewFeatures() {
       Range col_range(left_lim, right_lim);
       mask(row_range, col_range) = 0;
     }
+    (*curr_features_ptr)[code] = new_feature;
   }
 
+  // add mask
+  if (curr_mask_img_ptr != NULL) {
+    cv::bitwise_and(mask, mask_thresh, mask);
+  }
+  // cv::imshow("thresh", mask);
+  //cv::waitKey(1);
   // Detect new features.
   vector<KeyPoint> new_features(0);
   detector_ptr->detect(curr_img, new_features, mask);

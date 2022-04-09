@@ -153,6 +153,13 @@ private:
    */
   void imuCallback(const sensor_msgs::ImuConstPtr& msg);
 
+   /*
+   * @brief imuCallback
+   *    Callback function for the imu message.
+   * @param msg IMU msg.
+   */
+  void maskCallback(const sensor_msgs::ImageConstPtr& msg);
+
   /*
    * @initializeFirstFrame
    *    Initialize the image processing sequence, which is
@@ -331,6 +338,9 @@ private:
   // IMU message buffer.
   std::vector<sensor_msgs::Imu> imu_msg_buffer;
 
+  // mask image.
+  cv_bridge::CvImageConstPtr curr_mask_img_ptr;
+
   // Camera calibration parameters
   std::string cam0_distortion_model;
   cv::Vec2i cam0_resolution;
@@ -380,6 +390,7 @@ private:
   message_filters::TimeSynchronizer<
     sensor_msgs::Image, sensor_msgs::Image> stereo_sub;
   ros::Subscriber imu_sub;
+  ros::Subscriber mask_sub;
   ros::Publisher feature_pub;
   ros::Publisher tracking_info_pub;
   image_transport::Publisher debug_stereo_pub;
